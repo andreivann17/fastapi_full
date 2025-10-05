@@ -1,0 +1,108 @@
+# app/services/infer_swin_edema.py
+from __future__ import annotations
+import os
+from pathlib import Path
+import numpy as np
+from PIL import Image
+import torch
+import torchvision.transforms as T
+from transformers import AutoModelForImageClassification, AutoImageProcessor
+
+# --------------------- CONFIG ---------------------
+# Permite override por variable de entorno si lo deseas
+MODEL_PATH = Path(__file__).resolve().parents[1] / "inference_models" / "4_clases"
+BASE_MODEL = "microsoft/swin-base-patch4-window7-224"
+CLASSES    = ['csme','diabetic', 'ncsme', 'normal']
+USE_TTA    = True
+
+# --------------------- CARGA MODELO ---------------------
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = AutoModelForImageClassification.from_pretrained(str(MODEL_PATH)).to(device).eval()
+
+# --------------------- PROCESSOR con FALLBACK ---------------------
+try:
+    processor = AutoImageProcessor.from_pretrained(str(MODEL_PATH), local_files_only=True)
+    use_processor = True
+except Exception:
+    try:
+        processor = AutoImageProcessor.from_pretrained(BASE_MODEL, local_files_only=True)
+        use_processor = True
+    except Exception:
+        use_processor = False
+        _size = (224, 224)
+        _mean = [0.485, 0.456, 0.406]
+        _std  = [0.229, 0.224, 0.225]
+        manual_transform = T.Compose([
+            T.Resize(_size),
+            T.ToTensor(),
+            T.Normalize(mean=_mean, std=_std),
+        ])
+
+# Ajustes de processor (sin redimensionar al centro)
+if use_processor:
+    if hasattr(processor, "do_resize"):       processor.do_resize = True
+    if hasattr(processor, "size"):            processor.size = {"height": 224, "width": 224}
+    if hasattr(processor, "do_center_crop"):  processor.do_center_crop = False
+    if hasattr(processor, "do_normalize"):    processor.do_normalize = True
+
+# --------------------- MAPA DE ETIQUETAS ---------------------
+raw_id2label = model.config.id2label
+id2label = {int(k): str(v).lower().strip() for k, v in raw_id2label.items()}
+label2id = {v: k for k, v in id2label.items()}
+
+# --------------------- UTILIDADES ---------------------
+def _load_image_rgb(path: str | Path) -> Image.Image:
+    return Image.open(path).convert("RGB")
+
+def _softmax_np(x: np.ndarray) -> np.ndarray:
+    x = x - x.max(axis=1, keepdims=True)
+    e = np.exp(x)
+    return e / e.sum(axis=1, keepdims=True)
+
+def _pil_to_inputs(imgs: list[Image.Image]) -> dict:
+    if use_processor:
+        enc = processor(images=imgs, return_tensors="pt")
+        return {"pixel_values": enc["pixel_values"]}
+    else:
+        tensors = [manual_transform(im) for im in imgs]
+        return {"pixel_values": torch.stack(tensors)}
+
+def _preprocess_batch(paths: list[str | Path], flip: bool = False) -> dict:
+    imgs = [_load_image_rgb(p) for p in paths]
+    if flip:
+        imgs = [im.transpose(Image.FLIP_LEFT_RIGHT) for im in imgs]
+    inputs = _pil_to_inputs(imgs)
+    return {k: v.to(device) for k, v in inputs.items()}
+
+# --------------------- API: predict_image ---------------------
+@torch.inference_mode()
+def predict_image_4(img_path: str | Path) -> dict:
+    """
+    Retorna:
+      {
+        "label": <str>,                         # una de CLASSES
+        "probs": {cls: float, ...}              # en el orden de CLASSES
+      }
+    """
+    img_path = str(img_path)
+    if not os.path.isfile(img_path):
+        raise FileNotFoundError(f"No se encontró la imagen: {img_path}")
+
+    inputs = _preprocess_batch([img_path], flip=False)
+    with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(device.type=="cuda")):
+        logits = model(**inputs).logits.detach().float()
+
+    if USE_TTA:
+        inputs_fl = _preprocess_batch([img_path], flip=True)
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(device.type=="cuda")):
+            logits_fl = model(**inputs_fl).logits.detach().float()
+        logits = (logits + logits_fl) / 2.0
+
+    probs = _softmax_np(logits.cpu().numpy())[0]
+    ordered_probs = np.array([probs[label2id.get(c, -1)] if c in label2id else 0.0 for c in CLASSES])
+    pred_class = CLASSES[int(np.argmax(ordered_probs))]
+
+    return {
+        "label": pred_class,
+        "probs": {c: float(p) for c, p in zip(CLASSES, ordered_probs)}
+    }
