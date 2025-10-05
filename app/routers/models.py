@@ -10,7 +10,8 @@ from ..models import models_details as mdl  # mantenemos tu módulo
 from fastapi import APIRouter, Depends, File,Query, UploadFile, HTTPException,status
 from pathlib import Path
 import os, uuid, logging
-from ..services.infer_swin_edema import predict_image  # tu servicio
+from ..services.infer_swin_edema_3_clases import predict_image_3  # tu servicio
+from ..services.infer_swin_edema_4_clases import predict_image_4  # tu servicio
 class ModelBody(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -97,7 +98,7 @@ def edema_tres(
     tmp = None
     try:
         tmp = _save_temp(image)
-        pred = predict_image(str(tmp))  # ← tu Swin
+        pred = predict_image_3(str(tmp))  # ← tu Swin
         return {"label": pred["label"], "probs": pred["probs"]}
     except HTTPException:
         raise
@@ -118,7 +119,7 @@ def edema_cuatro(
     try:
         tmp = _save_temp(image)
         # Si después usas otro checkpoint 4 clases, cambia aquí la llamada.
-        pred = predict_image(str(tmp))
+        pred = predict_image_4(str(tmp))
         return {"label": pred["label"], "probs": pred["probs"]}
     except HTTPException:
         raise
