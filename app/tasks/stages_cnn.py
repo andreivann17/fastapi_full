@@ -1,0 +1,83 @@
+import numpy as np
+import cv2
+from tensorflow.keras.preprocessing.image import img_to_array, ImageDataGenerator
+from keras.layers import BatchNormalization
+from database.load_models import init_stages_models_from_sql
+import tensorflow as tf
+import time
+
+model_map = {}
+
+
+# Monkey patch para aceptar lista en 'axis'
+original_init = BatchNormalization.__init__
+def patched_init(self, *args, **kwargs):
+    if 'axis' in kwargs and isinstance(kwargs['axis'], list):
+        kwargs['axis'] = kwargs['axis'][0]
+    original_init(self, *args, **kwargs)
+BatchNormalization.__init__ = patched_init
+
+# Normalización
+datagen = ImageDataGenerator(
+    featurewise_center=True,
+    featurewise_std_normalization=True,
+)
+
+def prepare_image(img_path):
+    img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, (224, 224)) 
+    img = img / 255.0  
+    img = img_to_array(img)
+    img = np.expand_dims(img, axis=0)
+    img = datagen.standardize(img[0])  
+    img = np.expand_dims(img, axis=0) 
+    return img
+
+
+
+def predict_image(img_path, id_disease):
+    img = prepare_image(img_path)
+    model = model_map[int(id_disease)]["model"]
+    start_time = time.time()
+
+  
+    # Confirmar si se está usando GPU
+    device = ""
+    if tf.config.list_physical_devices('GPU'):
+        print("✅ Se usará GPU")
+        device = "GPU"
+    else:
+        print("⚠️ No hay GPU disponible, se usará CPU")
+        device = "CPU"
+
+    preds = model.predict(img)[0]  # ← vector de probabilidades
+    inference_time = round((time.time() - start_time) * 1000, 2)
+    predicted_class_idx = int(np.argmax(preds))
+    summary_results = ["0"] * len(preds)
+    summary_results[predicted_class_idx] = "1"
+
+    return {
+        "device":device,
+        "time_inference": inference_time,
+        "id_model": model_map[int(id_disease)]["id_model"],
+        "stages": model_map[int(id_disease)]["stages"],
+        "summary": summary_results,
+        "predicted_class": predicted_class_idx,
+        "vector_probs": preds.tolist(),
+    }
+
+
+def __main__():
+    global model_map
+    model_map = init_stages_models_from_sql()
+__main__()
+"""
+# 🔍 Ejemplo de uso
+if __name__ == "__main__":
+    path = r"f:\dataset\fundus\images\aptos\train_images_crop\0369f3efe69b.png"
+    result = predict_image(path)
+    print(result)
+
+
+"""

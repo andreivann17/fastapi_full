@@ -1,0 +1,25 @@
+# Entornos / caches
+venv/
+app/venv/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dll
+*.lib
+.build/
+dist/
+.eggs/
+*.egg-info/
+
+# Config/editor
+.vscode/
+.idea/
+
+# Credenciales
+.env
+.env.*
+
+# Archivos grandes generados
+uploads/**/tessellated_gif/
